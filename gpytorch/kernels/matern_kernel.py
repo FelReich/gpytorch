@@ -40,7 +40,7 @@ class MaternKernel(Kernel):
         decorate this kernel with a :class:`gpytorch.kernels.ScaleKernel`.
 
     :param nu: (Default: 2.5) The smoothness parameter.
-    :type nu: float (0.5, 1.5, or 2.5)
+    :type nu: float (0.5, 1.5, 2.5, 3.5 or 4.5)
     :param ard_num_dims: (Default: `None`) Set this if you want a separate lengthscale for each
         input dimension. It should be `d` if x1 is a `... x n x d` matrix.
     :type ard_num_dims: int, optional
@@ -77,8 +77,8 @@ class MaternKernel(Kernel):
     has_lengthscale = True
 
     def __init__(self, nu: float | None = 2.5, **kwargs):
-        if nu not in {0.5, 1.5, 2.5}:
-            raise RuntimeError("nu expected to be 0.5, 1.5, or 2.5")
+        if nu not in {0.5, 1.5, 2.5, 3.5, 4.5}:
+            raise RuntimeError("nu expected to be 0.5, 1.5, 2.5, 3.5 or 4.5")
         super().__init__(**kwargs)
         self.nu = nu
 
@@ -104,6 +104,10 @@ class MaternKernel(Kernel):
                 constant_component = (math.sqrt(3) * distance).add(1)
             elif self.nu == 2.5:
                 constant_component = (math.sqrt(5) * distance).add(1).add(5.0 / 3.0 * distance**2)
+            elif self.nu == 3.5:
+                constant_component = (math.sqrt(7) * distance).add(1).add(14.0 / 5.0 * distance**2).add(7.0 * math.sqrt(7) / 15.0 * distance**3)
+            elif self.nu == 4.5:
+                constant_component = (3 * distance).add(1).add(27.0 / 7.0 * distance**2).add(18.0 / 7.0 * distance**3).add(27.0 / 35.0 * distance**4)
             return constant_component * exp_component
         return MaternCovariance.apply(
             x1, x2, self.lengthscale, self.nu, lambda x1, x2: self.covar_dist(x1, x2, **params)

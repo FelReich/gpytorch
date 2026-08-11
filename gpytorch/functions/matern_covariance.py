@@ -45,6 +45,42 @@ class MaternCovariance(torch.autograd.Function):
                 d_output_d_input = linear_term.mul_(quadratic_term).mul_(exp_component).div_(lengthscale)
             else:
                 covar_mat = exp_component.mul_(linear_term.add_(quadratic_term))
+        elif nu == 3.5:
+            # 4 kernel sized Tensors if no grad else 5
+            if needs_grad:
+                scaled_unitless_dist_ = scaled_unitless_dist.clone()
+            linear_term = scaled_unitless_dist.clone().add_(1)
+            quadratic_term = scaled_unitless_dist.clone().pow_(2).mul_(2.0 / 5.0)
+            cubic_term = scaled_unitless_dist.clone().pow_(3).div_(15.0)
+            exp_component = scaled_unitless_dist.neg_().exp_()
+            if needs_grad:
+                covar_mat = (linear_term + quadratic_term + cubic_term).mul_(exp_component)
+                d_output_d_input = (
+                    scaled_unitless_dist_.clone().pow_(2).mul_(1.0 / 5.0)
+                    .mul(scaled_unitless_dist_.clone().add_(1).add_(scaled_unitless_dist_.clone().pow_(2).div_(3.0)))
+                    .mul_(exp_component).div_(lengthscale)
+                )
+            else:
+                covar_mat = exp_component.mul_(linear_term.add_(quadratic_term).add_(cubic_term))
+        elif nu == 4.5:
+            # 5 kernel sized Tensors if no grad else 6
+            if needs_grad:
+                scaled_unitless_dist_ = scaled_unitless_dist.clone()
+            linear_term = scaled_unitless_dist.clone().add_(1)
+            quadratic_term = scaled_unitless_dist.clone().pow_(2).mul_(3.0 / 7.0)
+            cubic_term = scaled_unitless_dist.clone().pow_(3).mul_(2.0 / 21.0)
+            quartic_term = scaled_unitless_dist.clone().pow_(4).div_(105.0)
+            exp_component = scaled_unitless_dist.neg_().exp_()
+            if needs_grad:
+                covar_mat = (linear_term + quadratic_term + cubic_term + quartic_term).mul_(exp_component)
+                d_output_d_input = (
+                    scaled_unitless_dist_
+                    .clone().pow_(2).div_(7.0)
+                    .mul_(scaled_unitless_dist_.clone().add_(1).add_(scaled_unitless_dist_.clone().pow_(2).mul_(2.0 / 5.0)).add_(scaled_unitless_dist_.clone().pow_(3).div_(15.0)))
+                    .mul_(exp_component).div_(lengthscale)
+                )
+            else:
+                covar_mat = exp_component.mul_(linear_term.add_(quadratic_term).add_(cubic_term).add_(quartic_term))
         if needs_grad:
             ctx.save_for_backward(d_output_d_input)
         return covar_mat
