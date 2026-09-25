@@ -18,6 +18,8 @@ from linear_operator.operators import (
     ZeroLinearOperator,
 )
 from linear_operator.utils.cholesky import psd_safe_cholesky
+from linear_operator.utils.linear_cg import cg_store_lanczos_basis
+from linear_operator.utils.lanczos import extend_lanczos_basis, lanczos_tridiag_to_diag
 from linear_operator.utils.interpolation import left_interp, left_t_interp
 from torch import Tensor
 
@@ -265,9 +267,71 @@ class DefaultPredictionStrategy:
         return fant_strat
 
     @property
+    @cached(name="cg_lanczos_cache")
+    def cg_lanczos_cache(self):
+        mvn = self.likelihood(self.train_prior_dist, self.train_inputs)
+        train_mean, train_train_covar = mvn.loc, mvn.lazy_covariance_matrix.evaluate_kernel()
+        train_labels_offset = (self.train_labels - train_mean).unsqueeze(-1)
+
+        cg_lanczos_tolerance = min(settings.eval_cg_tolerance.value(), 1e-6)
+        mean_cache, q_mat, t_mat = cg_store_lanczos_basis(
+            train_train_covar._matmul,
+            train_labels_offset,
+            tolerance=cg_lanczos_tolerance,
+            max_iter=settings.max_cg_iterations.value(),
+        )
+        mean_cache = mean_cache.squeeze(-1)
+
+        if settings.detach_test_caches.on():
+            mean_cache = mean_cache.detach()
+            q_mat = q_mat.detach()
+            t_mat = t_mat.detach()
+
+        register_cache_clear_hook(mean_cache, self)
+        register_cache_clear_hook(q_mat, self)
+        register_cache_clear_hook(t_mat, self)
+        return mean_cache, q_mat, t_mat
+
+    @property
     @cached(name="covar_cache")
     def covar_cache(self):
         train_train_covar = self.lik_train_train_covar
+
+        if settings.save_directions.on():
+            _, q_mat, t_mat = self.cg_lanczos_cache
+            cg_lanczos_tolerance = min(settings.eval_cg_tolerance.value(), 1e-6)
+            q_mat, t_mat = extend_lanczos_basis(
+                train_train_covar.evaluate_kernel()._matmul,
+                max_iter=settings.max_root_decomposition_size.value(),
+                dtype=train_train_covar.dtype,
+                device=train_train_covar.device,
+                matrix_shape=train_train_covar.matrix_shape,
+                q_mat=q_mat,
+                t_mat=t_mat,
+                tol=cg_lanczos_tolerance,
+            )
+
+            if t_mat.ndimension() == 2:
+                t_mat_for_diag = t_mat.unsqueeze(0)
+                q_mat_for_diag = q_mat.unsqueeze(0)
+                squeeze_probe = True
+            else:
+                t_mat_for_diag = t_mat
+                q_mat_for_diag = q_mat
+                squeeze_probe = False
+
+            mins = to_linear_operator(t_mat_for_diag)._diagonal().min(dim=-1, keepdim=True)[0].unsqueeze(-1)
+            jitter_mat = (settings.tridiagonal_jitter.value() * mins) * torch.eye(
+                t_mat_for_diag.size(-1), device=t_mat_for_diag.device, dtype=t_mat_for_diag.dtype
+            ).expand_as(t_mat_for_diag)
+            eigenvalues, eigenvectors = lanczos_tridiag_to_diag(t_mat_for_diag + jitter_mat)
+            train_train_covar_inv_root = q_mat_for_diag.matmul(eigenvectors) / eigenvalues.sqrt().unsqueeze(-2)
+            if squeeze_probe:
+                train_train_covar_inv_root = train_train_covar_inv_root.squeeze(0)
+            return self._exact_predictive_covar_inv_quad_form_cache(
+                train_train_covar_inv_root, self._last_test_train_covar
+            )
+
         train_train_covar_inv_root = to_dense(train_train_covar.root_inv_decomposition().root)
         return self._exact_predictive_covar_inv_quad_form_cache(train_train_covar_inv_root, self._last_test_train_covar)
 
@@ -277,6 +341,10 @@ class DefaultPredictionStrategy:
 
     @cached(name="mean_cache")
     def _mean_cache(self, nan_policy: str) -> Tensor:
+        if settings.fast_pred_var.on() and settings.save_directions.on() and nan_policy == "ignore":
+            mean_cache, _, _ = self.cg_lanczos_cache
+            return mean_cache
+
         mvn = self.likelihood(self.train_prior_dist, self.train_inputs)
         train_mean, train_train_covar = mvn.loc, mvn.lazy_covariance_matrix
 
