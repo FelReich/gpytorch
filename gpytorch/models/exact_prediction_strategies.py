@@ -297,7 +297,7 @@ class DefaultPredictionStrategy:
     def covar_cache(self):
         train_train_covar = self.lik_train_train_covar
 
-        if settings.save_directions.on():
+        if settings.use_cg_lanczos_variance.on():
             _, q_mat, t_mat = self.cg_lanczos_cache
             cg_lanczos_tolerance = min(settings.eval_cg_tolerance.value(), 1e-6)
             q_mat, t_mat = extend_lanczos_basis(
@@ -341,7 +341,7 @@ class DefaultPredictionStrategy:
 
     @cached(name="mean_cache")
     def _mean_cache(self, nan_policy: str) -> Tensor:
-        if settings.fast_pred_var.on() and settings.save_directions.on() and nan_policy == "ignore":
+        if settings.fast_pred_var.on() and settings.use_cg_lanczos_variance.on() and nan_policy == "ignore":
             mean_cache, _, _ = self.cg_lanczos_cache
             return mean_cache
 
