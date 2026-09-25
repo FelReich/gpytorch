@@ -6,6 +6,7 @@ import torch
 from linear_operator.settings import (
     _linalg_dtype_cholesky,
     _linalg_dtype_symeig,
+    cg_lanczos_aggressive_mean_stop,
     cg_tolerance,
     cholesky_jitter,
     cholesky_max_tries,
@@ -467,6 +468,7 @@ class use_keops(_feature_flag):
 __all__ = [
     "_linalg_dtype_symeig",
     "_linalg_dtype_cholesky",
+    "cg_lanczos_aggressive_mean_stop",
     "cg_tolerance",
     "cholesky_jitter",
     "cholesky_max_tries",
