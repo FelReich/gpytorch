@@ -19,6 +19,7 @@ from linear_operator.operators import (
 )
 from linear_operator.utils.cholesky import psd_safe_cholesky
 from linear_operator.utils.interpolation import left_interp, left_t_interp
+from linear_operator.utils.lanczos import extend_lanczos_basis_to_root_inv_decomposition
 from torch import Tensor
 
 from .. import settings
@@ -268,7 +269,11 @@ class DefaultPredictionStrategy:
     @cached(name="covar_cache")
     def covar_cache(self):
         train_train_covar = self.lik_train_train_covar
-        train_train_covar_inv_root = to_dense(train_train_covar.root_inv_decomposition().root)
+
+        if settings.use_cg_lanczos_variance.on():
+            train_train_covar_inv_root = self._cg_lanczos_covar_inv_root(train_train_covar)
+        else:
+            train_train_covar_inv_root = to_dense(train_train_covar.root_inv_decomposition().root)
         return self._exact_predictive_covar_inv_quad_form_cache(train_train_covar_inv_root, self._last_test_train_covar)
 
     @property
@@ -277,13 +282,13 @@ class DefaultPredictionStrategy:
 
     @cached(name="mean_cache")
     def _mean_cache(self, nan_policy: str) -> Tensor:
-        mvn = self.likelihood(self.train_prior_dist, self.train_inputs)
-        train_mean, train_train_covar = mvn.loc, mvn.lazy_covariance_matrix
-
-        train_labels_offset = (self.train_labels - train_mean).unsqueeze(-1)
+        train_train_covar, train_labels_offset = self.train_train_covar_and_labels_offset
 
         if nan_policy == "ignore":
-            mean_cache = train_train_covar.evaluate_kernel().solve(train_labels_offset).squeeze(-1)
+            if settings.use_cg_lanczos_variance.on():
+                mean_cache, _, _ = self.cg_lanczos_cache
+            else:
+                mean_cache = train_train_covar.evaluate_kernel().solve(train_labels_offset).squeeze(-1)
         elif nan_policy == "mask":
             # Mask all rows and columns in the kernel matrix corresponding to the missing observations.
             observed = settings.observation_nan_policy._get_observed(
@@ -319,6 +324,36 @@ class DefaultPredictionStrategy:
         register_cache_clear_hook(mean_cache, self)
 
         return mean_cache
+
+    @property
+    @cached(name="train_covar_and_labels_offset")
+    def train_train_covar_and_labels_offset(self):
+        mvn = self.likelihood(self.train_prior_dist, self.train_inputs)
+        train_mean, train_train_covar = mvn.loc, mvn.lazy_covariance_matrix
+
+        train_labels_offset = (self.train_labels - train_mean).unsqueeze(-1)
+
+        return train_train_covar, train_labels_offset
+    
+    @property
+    @cached(name="cg_lanczos_cache")
+    def cg_lanczos_cache(self):
+        train_train_covar, train_labels_offset = self.train_train_covar_and_labels_offset
+
+        mean_cache, q_mat, t_mat = train_train_covar.evaluate_kernel().solve_with_cg_lanczos_basis(train_labels_offset)
+
+        mean_cache = mean_cache.squeeze(-1)
+
+        if settings.detach_test_caches.on():
+            mean_cache = mean_cache.detach()
+            q_mat = q_mat.detach()
+            t_mat = t_mat.detach()
+
+        register_cache_clear_hook(mean_cache, self)
+        register_cache_clear_hook(q_mat, self)
+        register_cache_clear_hook(t_mat, self)
+
+        return mean_cache, q_mat, t_mat
 
     @property
     def num_train(self):
@@ -477,6 +512,27 @@ class DefaultPredictionStrategy:
                 covar_inv_quad_form_root.transpose(-1, -2).mul(-1),
             )
 
+    def _cg_lanczos_covar_inv_root(self, train_train_covar):
+        _, q_mat, t_mat = self.cg_lanczos_cache
+
+        if q_mat is None or t_mat is None or q_mat.size(-1) <= 1 or t_mat.size(-1) <= 1:
+            warnings.warn(
+                "CG-Lanczos basis recovery produced fewer than two usable directions; "
+                "falling back to the standard LOVE root inverse decomposition.",
+                RuntimeWarning,
+            )
+            return to_dense(train_train_covar.root_inv_decomposition().root)
+
+        return extend_lanczos_basis_to_root_inv_decomposition(
+            train_train_covar.matmul,
+            max_iter=settings.max_root_decomposition_size.value(),
+            dtype=train_train_covar.dtype,
+            device=train_train_covar.device,
+            matrix_shape=train_train_covar.matrix_shape,
+            q_mat=q_mat,
+            t_mat=t_mat,
+            tol=settings.eval_cg_tolerance.value(),
+        )
 
 class InterpolatedPredictionStrategy(DefaultPredictionStrategy):
     def __init__(self, train_inputs, train_prior_dist, train_labels, likelihood, uses_wiski=False):
