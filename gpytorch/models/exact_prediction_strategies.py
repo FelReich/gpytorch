@@ -531,7 +531,6 @@ class DefaultPredictionStrategy:
             matrix_shape=train_train_covar.matrix_shape,
             q_mat=q_mat,
             t_mat=t_mat,
-            tol=settings.eval_cg_tolerance.value(),
         )
 
 class InterpolatedPredictionStrategy(DefaultPredictionStrategy):
