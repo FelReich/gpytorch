@@ -10,7 +10,7 @@ from linear_operator.operators import LinearOperator
 import gpytorch
 
 
-class _ExactGP(gpytorch.models.ExactGP):
+class ExactGPModel(gpytorch.models.ExactGP):
     def __init__(self, train_x, train_y, likelihood):
         super().__init__(train_x, train_y, likelihood)
         self.mean_module = gpytorch.means.ZeroMean()
@@ -27,7 +27,7 @@ class TestCGLanczosVariance(unittest.TestCase):
 
     def make_model(self, train_y):
         likelihood = gpytorch.likelihoods.GaussianLikelihood().double()
-        model = _ExactGP(self.train_x, train_y, likelihood).double()
+        model = ExactGPModel(self.train_x, train_y, likelihood).double()
         model.eval()
         likelihood.eval()
         return model
@@ -66,6 +66,49 @@ class TestCGLanczosVariance(unittest.TestCase):
         self.assertIsNone(model.prediction_strategy.cg_lanczos_cache[1])
         self.assertTrue(torch.isfinite(prediction.mean).all())
         self.assertTrue(torch.isfinite(variance).all())
+
+    def test_prediction_matches_small_exact_reference(self):
+        train_y = torch.sin(6 * self.train_x)
+        model = self.make_model(train_y)
+
+        with (
+            torch.no_grad(),
+            self.prediction_settings(),
+            gpytorch.settings.cg_tolerance(1e-6),
+            gpytorch.settings.eval_cg_tolerance(1e-6),
+            gpytorch.settings.max_root_decomposition_size(40),
+        ):
+            prediction = model(self.test_x)
+            mean = prediction.mean
+            variance = prediction.variance
+
+        train_covar = model.covar_module(self.train_x).to_dense()
+        test_train_covar = model.covar_module(self.test_x, self.train_x).to_dense()
+        test_covar = model.covar_module(self.test_x).to_dense()
+        noisy_covar = train_covar + model.likelihood.noise * torch.eye(40, dtype=train_covar.dtype)
+        expected_mean = test_train_covar @ torch.linalg.solve(noisy_covar, train_y)
+        expected_variance = test_covar.diagonal() - (
+            test_train_covar * torch.linalg.solve(noisy_covar, test_train_covar.mT).mT
+        ).sum(-1)
+
+        self.assertIsNotNone(model.prediction_strategy.cg_lanczos_cache[1])
+        self.assertTrue(torch.allclose(mean, expected_mean, atol=2e-4, rtol=2e-4))
+        self.assertTrue(torch.allclose(variance, expected_variance, atol=2e-4, rtol=2e-4))
+
+    def test_setting_off_preserves_standard_prediction(self):
+        model = self.make_model(torch.sin(6 * self.train_x))
+
+        with (
+            torch.no_grad(),
+            self.prediction_settings(),
+            gpytorch.settings.use_cg_lanczos_variance(False),
+            patch.object(LinearOperator, "solve_with_cg_lanczos_basis", side_effect=AssertionError("CG called")),
+        ):
+            prediction = model(self.test_x)
+            self.assertTrue(torch.isfinite(prediction.mean).all())
+            self.assertTrue(torch.isfinite(prediction.variance).all())
+
+        self.assertIsNone(model.prediction_strategy.__dict__.get("cg_lanczos_cache"))
 
     def test_missing_observation_policies_use_standard_path(self):
         train_y = torch.sin(6 * self.train_x)
@@ -139,7 +182,7 @@ class TestCGLanczosVariance(unittest.TestCase):
         train_x = torch.linspace(0, 1, 12, dtype=torch.float64)
         train_y = torch.stack((torch.sin(6 * train_x), torch.cos(4 * train_x)))
         likelihood = gpytorch.likelihoods.GaussianLikelihood().double()
-        model = _ExactGP(train_x, train_y, likelihood).double()
+        model = ExactGPModel(train_x, train_y, likelihood).double()
         model.covar_module = gpytorch.kernels.ScaleKernel(
             gpytorch.kernels.RBFKernel(batch_shape=torch.Size([2])), batch_shape=torch.Size([2])
         ).double()
