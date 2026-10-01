@@ -270,11 +270,20 @@ class DefaultPredictionStrategy:
     def covar_cache(self):
         train_train_covar = self.lik_train_train_covar
 
-        if settings.use_cg_lanczos_variance.on():
+        if self._use_cg_lanczos_variance(settings.observation_nan_policy.value()):
             train_train_covar_inv_root = self._cg_lanczos_covar_inv_root(train_train_covar)
         else:
             train_train_covar_inv_root = to_dense(train_train_covar.root_inv_decomposition().root)
         return self._exact_predictive_covar_inv_quad_form_cache(train_train_covar_inv_root, self._last_test_train_covar)
+
+    def _use_cg_lanczos_variance(self, nan_policy: str) -> bool:
+        # Direction storage does not support gradients through training caches.
+        return (
+            settings.fast_pred_var.on()
+            and settings.use_cg_lanczos_variance.on()
+            and nan_policy == "ignore"
+            and (settings.detach_test_caches.on() or not torch.is_grad_enabled())
+        )
 
     @property
     def mean_cache(self):
@@ -285,7 +294,7 @@ class DefaultPredictionStrategy:
         train_train_covar, train_labels_offset = self.train_train_covar_and_labels_offset
 
         if nan_policy == "ignore":
-            if settings.use_cg_lanczos_variance.on():
+            if self._use_cg_lanczos_variance(nan_policy):
                 mean_cache, _, _ = self.cg_lanczos_cache
             else:
                 mean_cache = train_train_covar.evaluate_kernel().solve(train_labels_offset).squeeze(-1)
@@ -340,18 +349,23 @@ class DefaultPredictionStrategy:
     def cg_lanczos_cache(self):
         train_train_covar, train_labels_offset = self.train_train_covar_and_labels_offset
 
-        mean_cache, q_mat, t_mat = train_train_covar.evaluate_kernel().solve_with_cg_lanczos_basis(train_labels_offset)
+        with torch.no_grad():
+            mean_cache, q_mat, t_mat = train_train_covar.evaluate_kernel().solve_with_cg_lanczos_basis(
+                train_labels_offset
+            )
 
         mean_cache = mean_cache.squeeze(-1)
 
         if settings.detach_test_caches.on():
             mean_cache = mean_cache.detach()
-            q_mat = q_mat.detach()
-            t_mat = t_mat.detach()
+            if q_mat is not None:
+                q_mat = q_mat.detach()
+                t_mat = t_mat.detach()
 
         register_cache_clear_hook(mean_cache, self)
-        register_cache_clear_hook(q_mat, self)
-        register_cache_clear_hook(t_mat, self)
+        if q_mat is not None:
+            register_cache_clear_hook(q_mat, self)
+            register_cache_clear_hook(t_mat, self)
 
         return mean_cache, q_mat, t_mat
 
@@ -523,15 +537,16 @@ class DefaultPredictionStrategy:
             )
             return to_dense(train_train_covar.root_inv_decomposition().root)
 
-        return extend_lanczos_basis_to_root_inv_decomposition(
-            train_train_covar.matmul,
-            max_iter=settings.max_root_decomposition_size.value(),
-            dtype=train_train_covar.dtype,
-            device=train_train_covar.device,
-            matrix_shape=train_train_covar.matrix_shape,
-            q_mat=q_mat,
-            t_mat=t_mat,
-        )
+        with torch.no_grad():
+            return extend_lanczos_basis_to_root_inv_decomposition(
+                train_train_covar.matmul,
+                max_iter=settings.max_root_decomposition_size.value(),
+                dtype=train_train_covar.dtype,
+                device=train_train_covar.device,
+                matrix_shape=train_train_covar.matrix_shape,
+                q_mat=q_mat,
+                t_mat=t_mat,
+            )
 
 class InterpolatedPredictionStrategy(DefaultPredictionStrategy):
     def __init__(self, train_inputs, train_prior_dist, train_labels, likelihood, uses_wiski=False):
