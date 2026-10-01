@@ -278,14 +278,18 @@ class DefaultPredictionStrategy:
 
     def _use_cg_lanczos_variance(self, nan_policy: str) -> bool:
         # Direction storage does not support gradients through training caches.
-        return (
+        if not (
             settings.fast_pred_var.on()
             and settings.use_cg_lanczos_variance.on()
             and nan_policy == "ignore"
             and settings.fast_computations.solves.on()
             and self.lik_train_train_covar.size(-1) > settings.max_cholesky_size.value()
             and (settings.detach_test_caches.on() or not torch.is_grad_enabled())
-        )
+        ):
+            return False
+
+        train_train_covar, _ = self.train_train_covar_and_labels_offset
+        return type(train_train_covar.evaluate_kernel())._solve is LinearOperator._solve
 
     @property
     def mean_cache(self):

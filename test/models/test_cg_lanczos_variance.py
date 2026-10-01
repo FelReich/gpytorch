@@ -117,6 +117,24 @@ class TestCGLanczosVariance(unittest.TestCase):
                     self.assertTrue(torch.isfinite(prediction.mean).all())
                     self.assertTrue(torch.isfinite(prediction.variance).all())
 
+    def test_operator_with_custom_solve_uses_standard_prediction(self):
+        model = self.make_model(torch.sin(6 * self.train_x))
+        model.covar_module = gpytorch.kernels.LinearKernel().double()
+
+        with (
+            torch.no_grad(),
+            self.prediction_settings(),
+            patch.object(LinearOperator, "solve_with_cg_lanczos_basis", side_effect=AssertionError("CG called")),
+        ):
+            prediction = model(self.test_x)
+            self.assertTrue(torch.isfinite(prediction.mean).all())
+            self.assertTrue(torch.isfinite(prediction.variance).all())
+
+        self.assertEqual(
+            type(model.prediction_strategy.train_train_covar_and_labels_offset[0].evaluate_kernel()).__name__,
+            "LowRankRootAddedDiagLinearOperator",
+        )
+
     def test_gradients_with_attached_caches_use_standard_path(self):
         model = self.make_model(torch.sin(6 * self.train_x))
         test_x = self.test_x.clone().requires_grad_()
