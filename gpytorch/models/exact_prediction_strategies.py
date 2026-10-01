@@ -282,6 +282,8 @@ class DefaultPredictionStrategy:
             settings.fast_pred_var.on()
             and settings.use_cg_lanczos_variance.on()
             and nan_policy == "ignore"
+            and settings.fast_computations.solves.on()
+            and self.lik_train_train_covar.size(-1) > settings.max_cholesky_size.value()
             and (settings.detach_test_caches.on() or not torch.is_grad_enabled())
         )
 

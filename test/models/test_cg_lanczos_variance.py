@@ -99,6 +99,24 @@ class TestCGLanczosVariance(unittest.TestCase):
             self.assertTrue(torch.isfinite(prediction.mean).all())
             self.assertTrue(torch.isfinite(prediction.variance).all())
 
+    def test_direct_solve_settings_use_standard_prediction(self):
+        for setting in (
+            gpytorch.settings.max_cholesky_size(40),
+            gpytorch.settings.max_cholesky_size(41),
+            gpytorch.settings.fast_computations(solves=False),
+        ):
+            with self.subTest(setting=setting):
+                model = self.make_model(torch.sin(6 * self.train_x))
+                with (
+                    torch.no_grad(),
+                    self.prediction_settings(),
+                    setting,
+                    patch.object(LinearOperator, "solve_with_cg_lanczos_basis", side_effect=AssertionError("CG called")),
+                ):
+                    prediction = model(self.test_x)
+                    self.assertTrue(torch.isfinite(prediction.mean).all())
+                    self.assertTrue(torch.isfinite(prediction.variance).all())
+
     def test_gradients_with_attached_caches_use_standard_path(self):
         model = self.make_model(torch.sin(6 * self.train_x))
         test_x = self.test_x.clone().requires_grad_()
