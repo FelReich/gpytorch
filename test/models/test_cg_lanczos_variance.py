@@ -135,6 +135,30 @@ class TestCGLanczosVariance(unittest.TestCase):
             "LowRankRootAddedDiagLinearOperator",
         )
 
+    def test_batched_prediction_uses_cg_lanczos(self):
+        train_x = torch.linspace(0, 1, 12, dtype=torch.float64)
+        train_y = torch.stack((torch.sin(6 * train_x), torch.cos(4 * train_x)))
+        likelihood = gpytorch.likelihoods.GaussianLikelihood().double()
+        model = _ExactGP(train_x, train_y, likelihood).double()
+        model.covar_module = gpytorch.kernels.ScaleKernel(
+            gpytorch.kernels.RBFKernel(batch_shape=torch.Size([2])), batch_shape=torch.Size([2])
+        ).double()
+        model.eval()
+        likelihood.eval()
+
+        with (
+            torch.no_grad(),
+            self.prediction_settings(),
+            gpytorch.settings.max_cg_iterations(20),
+            gpytorch.settings.max_root_decomposition_size(10),
+        ):
+            prediction = model(torch.linspace(0.05, 0.95, 4, dtype=torch.float64))
+            self.assertTrue(torch.isfinite(prediction.mean).all())
+            self.assertTrue(torch.isfinite(prediction.variance).all())
+
+        self.assertEqual(prediction.mean.shape, (2, 4))
+        self.assertEqual(model.prediction_strategy.cg_lanczos_cache[1].shape[:2], (2, 12))
+
     def test_gradients_with_attached_caches_use_standard_path(self):
         model = self.make_model(torch.sin(6 * self.train_x))
         test_x = self.test_x.clone().requires_grad_()
