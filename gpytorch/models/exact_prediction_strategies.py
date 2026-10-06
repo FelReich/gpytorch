@@ -351,7 +351,7 @@ class DefaultPredictionStrategy:
         train_labels_offset = (self.train_labels - train_mean).unsqueeze(-1)
 
         return train_train_covar, train_labels_offset
-    
+
     @property
     @cached(name="cg_lanczos_cache")
     def cg_lanczos_cache(self):
