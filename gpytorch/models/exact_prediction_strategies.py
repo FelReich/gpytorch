@@ -277,6 +277,7 @@ class DefaultPredictionStrategy:
         return self._exact_predictive_covar_inv_quad_form_cache(train_train_covar_inv_root, self._last_test_train_covar)
 
     def _use_cg_lanczos_variance(self, nan_policy: str) -> bool:
+        """Check whether prediction can reuse a stored CG basis for variance."""
         # Direction storage does not support gradients through training caches.
         if not (
             settings.fast_pred_var.on()
@@ -343,6 +344,7 @@ class DefaultPredictionStrategy:
     @property
     @cached(name="train_covar_and_labels_offset")
     def train_train_covar_and_labels_offset(self):
+        """Cache the noisy training covariance and centered training labels."""
         mvn = self.likelihood(self.train_prior_dist, self.train_inputs)
         train_mean, train_train_covar = mvn.loc, mvn.lazy_covariance_matrix
 
@@ -353,6 +355,11 @@ class DefaultPredictionStrategy:
     @property
     @cached(name="cg_lanczos_cache")
     def cg_lanczos_cache(self):
+        """Cache the mean solve and CG-derived basis for predictive variance.
+
+        The basis and projected matrix may be ``None`` when too few reliable
+        directions remain; covariance prediction then falls back to LOVE.
+        """
         train_train_covar, train_labels_offset = self.train_train_covar_and_labels_offset
 
         with torch.no_grad():
@@ -533,6 +540,7 @@ class DefaultPredictionStrategy:
             )
 
     def _cg_lanczos_covar_inv_root(self, train_train_covar):
+        """Extend the cached basis and form an inverse root, or use LOVE."""
         _, q_mat, t_mat = self.cg_lanczos_cache
 
         if q_mat is None or t_mat is None or q_mat.size(-1) <= 1 or t_mat.size(-1) <= 1:
